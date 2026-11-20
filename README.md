@@ -45,11 +45,11 @@ This project can be easily hosted on GitHub Pages, Vercel, or Netlify.
 - **Output Directory:** `dist`
 
 ### GitHub Pages Tips
-If you use GitHub Pages with a project subdirectory (e.g., `username.github.io/kins-domain-planner/`), make sure to set the `base` in your `vite.config.ts`:
+If you use GitHub Pages with a project subdirectory (e.g., `username.github.io/ichizoku-ezu/`), make sure to set the `base` in your `vite.config.ts`:
 ```ts
 // vite.config.ts
 export default defineConfig({
-  base: '/kins-domain-planner/', // Set this to your repository name
+  base: '/ichizoku-ezu/', // Set this to your repository name
   plugins: [react()],
 })
 ```

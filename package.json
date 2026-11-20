@@ -1,9 +1,9 @@
 {
-  "name": "kins-domain-planner",
+  "name": "ichizoku-ezu",
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "homepage": "https://tomu-ai963.github.io/kins-domain-planner/",
+  "homepage": "https://tomu-ai963.github.io/ichizoku-ezu/",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
