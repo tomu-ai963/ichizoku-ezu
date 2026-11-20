@@ -1,60 +1,25 @@
-# Kin's Domain Planner | 一族の土地プランナー
+# 一族の土地 絵図 (ichizoku-ezu)
 
-A simple, aesthetic, and intuitive 1-hectare (100m x 100m) garden design planner based on the concepts from the "Ringing Cedars of Russia" series (Anastasia).
-ロシアの「響きわたる杉」シリーズ（アナスタシア）の概念に基づいた、1ヘクタール（100m x 100m）の土地設計をシミュレーションするためのシンプルで美しいプランナーです。
+実際の一族の土地を設計するための道具。土地の縦横を m で入れ、区画を「面」で描いて広さを確かめる。
 
-## Features | 特徴
+## できること
 
-- **1 Hectare Canvas:** A visual representation of a 100m x 100m plot with 10m grid lines.
-  - **1ヘクタールキャンバス:** 10m間隔のグリッドを備えた100m x 100mの設計エリア。
-- **Essential Items:** Place elements like Living Hedges, Orchards, Vegetable Gardens, Forests, Ponds, and Houses.
-  - **必須アイテム:** 生きた垣根、果樹園、菜園、森、池、家などの要素を配置可能。
-- **Statistics Panel:** Real-time calculation of item counts and estimated area usage.
-  - **統計パネル:** 配置アイテムの個数や推定面積割合をリアルタイムで算出。
-- **Anastasia Guide:** Rule-based feedback system to help you align with the core principles of Kin's Domains.
-  - **アナスタシア・ガイド:** 土地設計の基本原則に沿っているかを判定し、フィードバックを表示。
-- **Data Persistence:** Automatic saving via LocalStorage and manual Export/Import of JSON design files.
-  - **データ永続化:** LocalStorageによる自動保存と、JSONファイルによるエクスポート/インポート機能。
+- 土地の東西・南北を m で入力(1〜2000 m)。広さを m²・坪・ha で表示
+- 家・菜園・果樹園・森・池・生きた垣根・道・その他を、ドラッグで長方形の区画として描く
+- 区画の選択・移動・大きさ変更(右下の丸)、寸法と位置の数値入力、刻み 1 / 0.5 / 0.1 m
+- 外周に垣根を一括で引く
+- 種類ごとの面積の内訳と割合
+- 原則チェック(決まったルールによる判定。AI ではない): 外周の垣根・森の割合・池・家・多様さ・重なり・はみ出し
+- 元に戻す(Ctrl+Z)、Delete で選択区画を削除
+- ブラウザへの自動保存と、JSON の書き出し・読み込み(旧版の点形式は読み込めない)
+- スマホ幅でも使える(タッチで描ける)
 
-## Tech Stack | 技術スタック
+## 開発
 
-- **React** (TypeScript)
-- **Tailwind CSS**
-- **Lucide-react** (Icons)
-
-## How to use | 使い方
-
-1.  Select an item from the sidebar.
-    サイドバーから配置したいアイテムを選択します。
-2.  Click on the canvas to place it.
-    キャンバス上をクリックして配置します。
-3.  Right-click or use the Eraser tool to remove items.
-    右クリックまたは消しゴムツールでアイテムを削除できます。
-4.  Check the **Guide** for advice on your design.
-    「ガイド」を開いて、設計のアドバイスを確認しましょう。
-
----
-
-## Deployment | デプロイについて
-
-This project can be easily hosted on GitHub Pages, Vercel, or Netlify.
-このプロジェクトは GitHub Pages, Vercel, Netlify などで簡単に公開できます。
-
-### Build Command | ビルド設定
-- **Build Command:** `npm run build` or `vite build`
-- **Output Directory:** `dist`
-
-### GitHub Pages Tips
-If you use GitHub Pages with a project subdirectory (e.g., `username.github.io/ichizoku-ezu/`), make sure to set the `base` in your `vite.config.ts`:
-```ts
-// vite.config.ts
-export default defineConfig({
-  base: '/ichizoku-ezu/', // Set this to your repository name
-  plugins: [react()],
-})
+```sh
+npm install
+npm run dev
+npm run build
 ```
 
-## License | ライセンス
-
-MIT License. Feel free to use and contribute to creating a greener world!
-MITライセンス。地球をより緑豊かにするために、自由にお使いください！
+React + TypeScript + Vite + Tailwind CSS。

@@ -1,420 +1,443 @@
-import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { 
-  Sprout, 
-  Apple, 
-  Carrot, 
-  Trees, 
-  Waves, 
-  Home, 
-  Eraser, 
-  Undo2,
-  Trash2,
-  Info,
-  Download,
-  Upload,
-  BarChart3,
-  Sparkles,
-  X,
-  ChevronRight
-} from 'lucide-react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Download, MousePointer2, Trash2, Undo2, Upload } from 'lucide-react';
+import LandCanvas, { Tool } from './LandCanvas';
+import {
+  area,
+  DEFAULT_LAND,
+  formatArea,
+  formatTsubo,
+  Land,
+  LAND_MAX,
+  LAND_MIN,
+  perimeterHedges,
+  Plan,
+  round1,
+  Zone,
+  ZONE_ORDER,
+  ZONE_TYPES,
+  ZoneType,
+} from './model';
+import { downloadPlan, loadPlan, parsePlan, savePlan } from './storage';
+import { runChecks } from './checks';
 
-// --- Types ---
+const HISTORY_MAX = 100;
 
-type ToolType = 'hedge' | 'orchard' | 'garden' | 'forest' | 'pond' | 'house' | 'eraser';
-
-interface PlacedItem {
-  id: string;
-  type: ToolType;
-  x: number; // percentage (0-100)
-  y: number; // percentage (0-100)
-}
-
-interface ToolConfig {
-  id: ToolType;
+/** 入力中は文字列のまま持ち、確定(blur / Enter)で数値にする */
+function NumField(props: {
   label: string;
-  icon: React.ElementType;
-  color: string;
-  bg: string;
-  desc?: string;
-  estimatedArea?: number; // m2 per unit (rough estimation for statistics)
-}
-
-// --- Constants ---
-
-const TOOLS: ToolConfig[] = [
-  { id: 'hedge', label: '生きた垣根', icon: Sprout, color: 'text-emerald-600', bg: 'bg-emerald-100', estimatedArea: 5 },
-  { id: 'orchard', label: '果樹園', icon: Apple, color: 'text-rose-500', bg: 'bg-rose-100', estimatedArea: 20 },
-  { id: 'garden', label: '菜園', icon: Carrot, color: 'text-orange-500', bg: 'bg-orange-100', estimatedArea: 10 },
-  { id: 'forest', label: '森', icon: Trees, color: 'text-green-700', bg: 'bg-green-100', estimatedArea: 50 },
-  { id: 'pond', label: '池', icon: Waves, color: 'text-blue-500', bg: 'bg-blue-100', estimatedArea: 40 },
-  { id: 'house', label: '家', icon: Home, color: 'text-amber-700', bg: 'bg-amber-100', estimatedArea: 60 },
-  { id: 'eraser', label: '消しゴム', icon: Eraser, color: 'text-slate-500', bg: 'bg-slate-200' },
-];
-
-const CANVAS_SIZE = 600;
-const GRID_INTERVAL = 10;
-const LOCAL_STORAGE_KEY = 'kins-domain-design';
-
-export default function App() {
-  const [activeTool, setActiveTool] = useState<ToolType>('hedge');
-  const [items, setItems] = useState<PlacedItem[]>([]);
-  const [showStats, setShowStats] = useState(false);
-  const [showGuide, setShowGuide] = useState(false);
-  const canvasRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  // --- Persistence ---
-
+  value: number;
+  min: number;
+  max: number;
+  onFocus?: () => void;
+  onCommit: (v: number) => void;
+}) {
+  const [text, setText] = useState(String(props.value));
+  const [editing, setEditing] = useState(false);
   useEffect(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) {
-      try {
-        setItems(JSON.parse(saved));
-      } catch (e) {
-        console.error('Failed to load saved design');
-      }
-    }
-  }, []);
+    if (!editing) setText(String(props.value));
+  }, [props.value, editing]);
 
-  useEffect(() => {
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(items));
-  }, [items]);
-
-  // --- Export/Import ---
-
-  const exportData = () => {
-    const data = JSON.stringify(items, null, 2);
-    const blob = new Blob([data], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `kins-domain-${new Date().toISOString().slice(0, 10)}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const importData = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      try {
-        const data = JSON.parse(event.target?.result as string);
-        if (Array.isArray(data)) {
-          setItems(data);
-        }
-      } catch (e) {
-        alert('無効なファイル形式です。');
-      }
-    };
-    reader.readAsText(file);
-  };
-
-  // --- Statistics ---
-
-  const stats = useMemo(() => {
-    const counts: Record<string, number> = {};
-    let totalEstimatedArea = 0;
-    
-    items.forEach(item => {
-      counts[item.type] = (counts[item.type] || 0) + 1;
-      const config = TOOLS.find(t => t.id === item.type);
-      if (config?.estimatedArea) totalEstimatedArea += config.estimatedArea;
-    });
-
-    const percent = Math.min((totalEstimatedArea / 10000) * 100, 100);
-    return { counts, totalEstimatedArea, percent };
-  }, [items]);
-
-  // --- Guide Logic (Simulated AI Analysis) ---
-
-  const analysis = useMemo(() => {
-    const tips: string[] = [];
-    const scores: { label: string, status: 'good' | 'warn' | 'neutral' }[] = [];
-
-    // 1. Perimeter Hedge Check
-    const hedgeCount = items.filter(i => i.type === 'hedge').length;
-    const hasPerimeter = items.filter(i => i.type === 'hedge' && (i.x < 15 || i.x > 85 || i.y < 15 || i.y > 85)).length > 10;
-    
-    if (hasPerimeter) {
-      scores.push({ label: '生きた垣根による保護', status: 'good' });
+  const commit = () => {
+    setEditing(false);
+    const v = Number(text);
+    if (text.trim() !== '' && Number.isFinite(v)) {
+      props.onCommit(round1(Math.min(props.max, Math.max(props.min, v))));
     } else {
-      tips.push('土地の境界に「生きた垣根」を植えることで、一族の空間を守り、調和のとれた微気候を作ることができます。');
-      scores.push({ label: '生きた垣根による保護', status: 'warn' });
-    }
-
-    // 2. Diversity Check
-    const typesCount = new Set(items.map(i => i.type)).size;
-    if (typesCount >= 5) {
-      scores.push({ label: '生物の多様性', status: 'good' });
-    } else {
-      tips.push('果樹園、菜園、森、池など、多様な要素を組み合わせることで、自然の自浄作用と豊かさが生まれます。');
-      scores.push({ label: '生物の多様性', status: 'warn' });
-    }
-
-    // 3. Center Openness Check
-    const centerItems = items.filter(i => i.x > 35 && i.x < 65 && i.y > 35 && i.y < 65).length;
-    if (centerItems < items.length * 0.2) {
-      scores.push({ label: '中央の開放感', status: 'good' });
-    } else {
-      tips.push('中央部分を少し開けておくことで、光が入り、家族が集まるための風通しの良い空間になります。');
-      scores.push({ label: '中央の開放感', status: 'warn' });
-    }
-
-    // 4. Essential Elements
-    const hasPond = items.some(i => i.type === 'pond');
-    const hasForest = items.some(i => i.type === 'forest');
-    if (!hasPond) tips.push('小さな「池」は、土地の湿度を保ち、鳥や益虫を呼び寄せる大切な命の源になります。');
-    if (!hasForest) tips.push('土地の1/4から3/4を「森」にすることで、土壌が育まれ、心地よい静寂が得られます。');
-
-    return { tips, scores };
-  }, [items]);
-
-  // --- Handlers ---
-
-  const handleCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!canvasRef.current) return;
-    const rect = canvasRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * 100;
-    const y = ((e.clientY - rect.top) / rect.height) * 100;
-    if (activeTool === 'eraser') return;
-    const newItem: PlacedItem = { id: Math.random().toString(36).substr(2, 9), type: activeTool, x, y };
-    setItems((prev) => [...prev, newItem]);
-  };
-
-  const removeItem = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (activeTool === 'eraser' || e.button === 2) {
-      setItems((prev) => prev.filter((item) => item.id !== id));
+      setText(String(props.value));
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#fdfaf3] text-stone-800 font-sans flex flex-col selection:bg-emerald-100">
-      {/* Header */}
-      <header className="bg-white/80 backdrop-blur-md border-b border-stone-200 p-4 flex justify-between items-center sticky top-0 z-20">
-        <div className="flex items-center gap-3">
-          <div className="bg-emerald-600 p-2 rounded-xl shadow-lg shadow-emerald-200">
-            <Trees className="text-white w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold tracking-tight text-stone-900 leading-none mb-1">Kin's Domain Planner</h1>
-            <p className="text-[10px] text-stone-400 font-bold uppercase tracking-wider">Sustainable Garden Design Interface</p>
-          </div>
+    <label className="flex flex-col gap-1 text-xs text-stone-500">
+      {props.label}
+      <input
+        type="number"
+        inputMode="decimal"
+        step="0.1"
+        className="w-full rounded-md border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-900"
+        value={text}
+        onFocus={() => {
+          setEditing(true);
+          props.onFocus?.();
+        }}
+        onChange={(e) => setText(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') (e.target as HTMLInputElement).blur();
+        }}
+      />
+    </label>
+  );
+}
+
+function Section(props: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="rounded-xl border border-stone-200 bg-white p-4">
+      <h2 className="mb-3 text-sm font-bold text-stone-700">{props.title}</h2>
+      {props.children}
+    </section>
+  );
+}
+
+export default function App() {
+  const [plan, setPlan] = useState<Plan>(() => loadPlan() ?? { version: 1, land: DEFAULT_LAND, zones: [] });
+  const [past, setPast] = useState<Plan[]>([]);
+  const [tool, setTool] = useState<Tool>('select');
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [snap, setSnap] = useState(1);
+  const [hedgeWidth, setHedgeWidth] = useState(2);
+  const [message, setMessage] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const changeStart = useRef<Plan | null>(null);
+
+  const { land, zones } = plan;
+
+  useEffect(() => savePlan(plan), [plan]);
+
+  // --- 履歴 ---
+  const pushHistory = useCallback(() => {
+    setPast((p) => [...p.slice(-HISTORY_MAX + 1), plan]);
+  }, [plan]);
+
+  const undo = useCallback(() => {
+    if (past.length === 0) return;
+    setPlan(past[past.length - 1]);
+    setPast(past.slice(0, -1));
+    setSelectedId(null);
+  }, [past]);
+
+  const setZones = (fn: (zs: Zone[]) => Zone[]) => setPlan((p) => ({ ...p, zones: fn(p.zones) }));
+  const setLand = (patch: Partial<Land>) => setPlan((p) => ({ ...p, land: { ...p.land, ...patch } }));
+
+  const updateZone = (z: Zone) => setZones((zs) => zs.map((q) => (q.id === z.id ? z : q)));
+
+  const deleteSelected = useCallback(() => {
+    if (!selectedId) return;
+    pushHistory();
+    setZones((zs) => zs.filter((z) => z.id !== selectedId));
+    setSelectedId(null);
+  }, [selectedId, pushHistory]);
+
+  // --- キーボード ---
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'TEXTAREA') return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        deleteSelected();
+      } else if (e.key === 'Escape') {
+        setSelectedId(null);
+        setTool('select');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo, deleteSelected]);
+
+  // --- 読み込み・書き出し ---
+  const importFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    file
+      .text()
+      .then((txt) => {
+        const p = parsePlan(JSON.parse(txt));
+        pushHistory();
+        setPlan(p);
+        setSelectedId(null);
+        setMessage(`「${p.land.name}」を読み込みました(区画 ${p.zones.length} 個)。`);
+      })
+      .catch((err: unknown) => {
+        setMessage(err instanceof Error ? `読み込めませんでした: ${err.message}` : '読み込めませんでした。');
+      });
+  };
+
+  // --- 集計 ---
+  const landArea = land.width * land.height;
+  const breakdown = useMemo(() => {
+    return ZONE_ORDER.map((t) => {
+      const zs = zones.filter((z) => z.type === t);
+      const a = zs.reduce((s, z) => s + area(z), 0);
+      return { type: t, count: zs.length, area: a };
+    }).filter((r) => r.count > 0);
+  }, [zones]);
+  const usedArea = breakdown.reduce((s, r) => s + r.area, 0);
+  const checks = useMemo(() => runChecks(land, zones), [land, zones]);
+
+  const selected = zones.find((z) => z.id === selectedId) ?? null;
+
+  const btn =
+    'inline-flex items-center gap-1.5 rounded-lg border border-stone-300 bg-white px-3 py-2 text-sm font-medium text-stone-700 hover:bg-stone-50 disabled:opacity-40';
+
+  return (
+    <div className="min-h-screen bg-[#f7f4ec] text-stone-800">
+      <header className="sticky top-0 z-20 flex flex-wrap items-center justify-between gap-2 border-b border-stone-200 bg-white/90 px-4 py-3 backdrop-blur">
+        <div>
+          <h1 className="text-lg font-bold leading-tight text-stone-900">一族の土地 絵図</h1>
+          <p className="text-xs text-stone-500">土地を面で区切って、広さを確かめる設計図</p>
         </div>
-        
-        <div className="flex gap-2">
-          <input type="file" ref={fileInputRef} onChange={importData} accept=".json" className="hidden" />
-          <button onClick={() => fileInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs font-semibold hover:bg-stone-50 transition-colors">
-            <Upload size={14} /> インポート
+        <div className="flex flex-wrap gap-2">
+          <button className={btn} onClick={undo} disabled={past.length === 0} title="元に戻す (Ctrl+Z)">
+            <Undo2 size={16} /> 戻す
           </button>
-          <button onClick={exportData} className="flex items-center gap-2 px-3 py-2 bg-white border border-stone-200 rounded-lg text-xs font-semibold hover:bg-stone-50 transition-colors">
-            <Download size={14} /> エクスポート
+          <input ref={fileRef} type="file" accept=".json,application/json" className="hidden" onChange={importFile} />
+          <button className={btn} onClick={() => fileRef.current?.click()}>
+            <Upload size={16} /> 読み込み
           </button>
-          <div className="w-px h-8 bg-stone-200 mx-1" />
-          <button onClick={() => setItems([])} className="p-2 hover:bg-red-50 rounded-lg transition-colors text-red-500" title="Clear All">
-            <Trash2 size={20} />
+          <button className={btn} onClick={() => downloadPlan(plan)}>
+            <Download size={16} /> 書き出し
           </button>
         </div>
       </header>
 
-      <main className="flex flex-1 overflow-hidden relative">
-        {/* Sidebar */}
-        <aside className="w-72 bg-white border-r border-stone-200 p-6 flex flex-col gap-6 shadow-sm overflow-y-auto z-10">
-          <div>
-            <h2 className="text-[10px] font-bold uppercase tracking-[0.2em] text-stone-400 mb-4">配置アイテム</h2>
-            <div className="grid gap-2">
-              {TOOLS.map((tool) => (
+      {message && (
+        <div className="mx-4 mt-3 flex items-start justify-between gap-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <span>{message}</span>
+          <button className="text-amber-700" onClick={() => setMessage(null)} aria-label="閉じる">
+            ×
+          </button>
+        </div>
+      )}
+
+      <main className="mx-auto flex max-w-7xl flex-col gap-4 p-4 lg:flex-row lg:items-start">
+        {/* 絵図 */}
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
+          <div className="flex gap-2 overflow-x-auto pb-1" role="toolbar" aria-label="描く道具">
+            <button
+              onClick={() => setTool('select')}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm ${
+                tool === 'select' ? 'border-stone-800 bg-stone-800 text-white' : 'border-stone-300 bg-white'
+              }`}
+            >
+              <MousePointer2 size={14} /> 選ぶ・動かす
+            </button>
+            {ZONE_ORDER.map((t) => {
+              const st = ZONE_TYPES[t];
+              const on = tool === t;
+              return (
                 <button
-                  key={tool.id}
-                  onClick={() => setActiveTool(tool.id)}
-                  className={`
-                    flex items-center justify-between w-full p-3 rounded-xl transition-all duration-200
-                    ${activeTool === tool.id 
-                      ? `${tool.bg} ${tool.color} shadow-sm ring-1 ring-inset ring-current/20 scale-[1.02]` 
-                      : 'hover:bg-stone-50 text-stone-500'}
-                  `}
+                  key={t}
+                  onClick={() => {
+                    setTool(t);
+                    setSelectedId(null);
+                  }}
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-sm ${
+                    on ? 'border-stone-800 bg-stone-800 text-white' : 'border-stone-300 bg-white'
+                  }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <tool.icon size={18} />
-                    <span className="font-semibold text-sm">{tool.label}</span>
-                  </div>
-                  {stats.counts[tool.id] > 0 && (
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full bg-white/50 font-bold`}>
-                      {stats.counts[tool.id]}
-                    </span>
-                  )}
+                  <span className="inline-block h-3 w-3 rounded-sm border" style={{ background: st.fill, borderColor: st.stroke }} />
+                  {st.label}
                 </button>
-              ))}
-            </div>
+              );
+            })}
           </div>
-
-          <div className="space-y-2">
-             <button 
-              onClick={() => setShowStats(!showStats)}
-              className={`flex items-center gap-3 w-full p-4 rounded-2xl border transition-all ${showStats ? 'bg-emerald-50 border-emerald-100 text-emerald-700' : 'bg-stone-50 border-stone-100 hover:border-stone-200'}`}
-            >
-              <BarChart3 size={18} />
-              <span className="text-sm font-bold">統計パネル</span>
-              <ChevronRight size={14} className={`ml-auto transition-transform ${showStats ? 'rotate-90' : ''}`} />
-            </button>
-            
-            <button 
-              onClick={() => setShowGuide(!showGuide)}
-              className={`flex items-center gap-3 w-full p-4 rounded-2xl border transition-all ${showGuide ? 'bg-amber-50 border-amber-100 text-amber-700' : 'bg-stone-50 border-stone-100 hover:border-stone-200'}`}
-            >
-              <Sparkles size={18} />
-              <span className="text-sm font-bold">アナスタシア・ガイド</span>
-              <ChevronRight size={14} className={`ml-auto transition-transform ${showGuide ? 'rotate-90' : ''}`} />
-            </button>
+          <p className="text-xs text-stone-500">
+            {tool === 'select'
+              ? '区画をタップで選択、ドラッグで移動、右下の丸で大きさを変えます。'
+              : `ドラッグして「${ZONE_TYPES[tool].label}」の区画を描きます。`}
+          </p>
+          <div className="rounded-xl border border-stone-200 bg-white p-2">
+            <LandCanvas
+              land={land}
+              zones={zones}
+              tool={tool}
+              selectedId={selectedId}
+              snap={snap}
+              onSelect={setSelectedId}
+              onCreate={(z) => {
+                pushHistory();
+                setZones((zs) => [...zs, z]);
+                setSelectedId(z.id);
+                setTool('select');
+              }}
+              onBeginChange={() => {
+                changeStart.current = plan;
+              }}
+              onLiveChange={updateZone}
+              onEndChange={() => {
+                const start = changeStart.current;
+                changeStart.current = null;
+                if (start && start.zones !== plan.zones) {
+                  setPast((p) => [...p.slice(-HISTORY_MAX + 1), start]);
+                }
+              }}
+            />
           </div>
-
-          <div className="mt-auto bg-stone-50 rounded-2xl p-4 border border-stone-100">
-            <div className="flex items-center gap-2 mb-2 text-emerald-800">
-              <Info size={14} />
-              <span className="text-[10px] font-bold uppercase tracking-wider">Quick Tip</span>
-            </div>
-            <p className="text-[11px] text-stone-500 leading-relaxed italic">
-              "自らの手で一本の木を植えるとき、それは地球の魂に触れることと同じです。"
-            </p>
-          </div>
-        </aside>
-
-        {/* Canvas Area */}
-        <section className="flex-1 overflow-auto p-12 flex justify-center items-start bg-[radial-gradient(#e5e7eb_1px,transparent_1px)] [background-size:24px_24px]">
-          <div className="relative group">
-            <div className="absolute -inset-8 bg-white/40 blur-3xl rounded-full opacity-0 group-hover:opacity-100 transition-opacity duration-1000 -z-10"></div>
-            
-            <div 
-              ref={canvasRef}
-              onClick={handleCanvasClick}
-              onContextMenu={(e) => e.preventDefault()}
-              className="relative bg-[#e8f5e9] rounded-[2rem] shadow-[0_32px_64px_-16px_rgba(0,0,0,0.1)] border-[12px] border-white overflow-hidden cursor-crosshair transition-all duration-700 hover:shadow-[0_48px_80px_-20px_rgba(0,0,0,0.15)]"
-              style={{ width: CANVAS_SIZE, height: CANVAS_SIZE }}
+          <label className="flex items-center gap-2 text-xs text-stone-500">
+            寸法の刻み
+            <select
+              className="rounded-md border border-stone-300 bg-white px-2 py-1 text-sm text-stone-800"
+              value={snap}
+              onChange={(e) => setSnap(Number(e.target.value))}
             >
-              <div 
-                className="absolute inset-0 pointer-events-none opacity-[0.08]"
-                style={{
-                  backgroundImage: `linear-gradient(to right, #065f46 1.5px, transparent 1.5px), linear-gradient(to bottom, #065f46 1.5px, transparent 1.5px)`,
-                  backgroundSize: `${100 / (100 / GRID_INTERVAL)}% ${100 / (100 / GRID_INTERVAL)}%`
-                }}
-              />
+              <option value={1}>1 m</option>
+              <option value={0.5}>0.5 m</option>
+              <option value={0.1}>0.1 m</option>
+            </select>
+          </label>
+        </div>
 
-              {items.map((item) => {
-                const config = TOOLS.find(t => t.id === item.type)!;
-                const Icon = config.icon;
-                return (
-                  <div
-                    key={item.id}
-                    onClick={(e) => removeItem(item.id, e)}
-                    onContextMenu={(e) => { e.preventDefault(); removeItem(item.id, e); }}
-                    className={`
-                      absolute -translate-x-1/2 -translate-y-1/2 cursor-pointer
-                      transition-all duration-300 hover:scale-150 group/item
-                      p-2 rounded-full ${config.bg} ${config.color} shadow-lg ring-2 ring-white
-                      flex items-center justify-center animate-in zoom-in-50 duration-300
-                    `}
-                    style={{ left: `${item.x}%`, top: `${item.y}%` }}
+        {/* 右側のパネル */}
+        <div className="flex w-full flex-col gap-4 lg:w-80 lg:shrink-0">
+          {selected && (
+            <Section title="選んだ区画">
+              <div className="flex flex-col gap-3">
+                <label className="flex flex-col gap-1 text-xs text-stone-500">
+                  種類
+                  <select
+                    className="rounded-md border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-900"
+                    value={selected.type}
+                    onChange={(e) => {
+                      pushHistory();
+                      updateZone({ ...selected, type: e.target.value as ZoneType });
+                    }}
                   >
-                    <Icon size={20} />
-                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-stone-800 text-white text-[10px] px-2 py-1 rounded opacity-0 group-hover/item:opacity-100 pointer-events-none transition-opacity whitespace-nowrap">
-                      {config.label}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            
-            <div className="absolute -bottom-10 left-4 right-4 flex justify-between text-[10px] font-bold text-stone-400 uppercase tracking-[0.3em]">
-              <span>Start (0m)</span>
-              <div className="h-px bg-stone-200 flex-1 mx-8 self-center" />
-              <span>1 Hectare (100m)</span>
-            </div>
-          </div>
-        </section>
-
-        {/* Overlay Panels */}
-        {showStats && (
-          <div className="absolute top-6 right-6 w-64 bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl border border-stone-100 p-6 animate-in fade-in slide-in-from-right-4 duration-300 z-30">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="font-bold text-sm">土地の統計</h3>
-              <button onClick={() => setShowStats(false)} className="text-stone-400 hover:text-stone-600"><X size={16} /></button>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <div className="flex justify-between text-[10px] font-bold text-stone-400 uppercase mb-1">
-                  <span>推定活用面積</span>
-                  <span>{stats.percent.toFixed(1)}%</span>
+                    {ZONE_ORDER.map((t) => (
+                      <option key={t} value={t}>
+                        {ZONE_TYPES[t].label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="flex flex-col gap-1 text-xs text-stone-500">
+                  名前(空なら種類名)
+                  <input
+                    className="rounded-md border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-900"
+                    value={selected.name}
+                    placeholder={ZONE_TYPES[selected.type].label}
+                    onFocus={pushHistory}
+                    onChange={(e) => updateZone({ ...selected, name: e.target.value })}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <NumField label="東西の長さ (m)" value={selected.w} min={0.1} max={LAND_MAX} onFocus={pushHistory} onCommit={(w) => updateZone({ ...selected, w })} />
+                  <NumField label="南北の長さ (m)" value={selected.h} min={0.1} max={LAND_MAX} onFocus={pushHistory} onCommit={(h) => updateZone({ ...selected, h })} />
+                  <NumField label="西端からの距離 (m)" value={selected.x} min={0} max={LAND_MAX} onFocus={pushHistory} onCommit={(x) => updateZone({ ...selected, x })} />
+                  <NumField label="北端からの距離 (m)" value={selected.y} min={0} max={LAND_MAX} onFocus={pushHistory} onCommit={(y) => updateZone({ ...selected, y })} />
                 </div>
-                <div className="h-2 bg-stone-100 rounded-full overflow-hidden">
-                  <div className="h-full bg-emerald-500 transition-all duration-1000" style={{ width: `${stats.percent}%` }} />
-                </div>
+                <p className="text-sm">
+                  面積 <strong>{formatArea(area(selected))}</strong>
+                  <span className="ml-2 text-stone-500">{formatTsubo(area(selected))}</span>
+                </p>
+                <button
+                  className="inline-flex items-center justify-center gap-1.5 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700 hover:bg-red-100"
+                  onClick={deleteSelected}
+                >
+                  <Trash2 size={14} /> この区画を消す
+                </button>
               </div>
+            </Section>
+          )}
+
+          <Section title="土地">
+            <div className="flex flex-col gap-3">
+              <label className="flex flex-col gap-1 text-xs text-stone-500">
+                名前
+                <input
+                  className="rounded-md border border-stone-300 bg-white px-2 py-1.5 text-sm text-stone-900"
+                  value={land.name}
+                  onFocus={pushHistory}
+                  onChange={(e) => setLand({ name: e.target.value })}
+                />
+              </label>
               <div className="grid grid-cols-2 gap-2">
-                {TOOLS.filter(t => t.id !== 'eraser').map(tool => (
-                  <div key={tool.id} className="p-2 bg-stone-50 rounded-xl">
-                    <div className="text-[10px] text-stone-400 mb-0.5">{tool.label}</div>
-                    <div className="font-bold text-sm">{stats.counts[tool.id] || 0}</div>
-                  </div>
-                ))}
+                <NumField label="東西 (m)" value={land.width} min={LAND_MIN} max={LAND_MAX} onFocus={pushHistory} onCommit={(width) => setLand({ width })} />
+                <NumField label="南北 (m)" value={land.height} min={LAND_MIN} max={LAND_MAX} onFocus={pushHistory} onCommit={(height) => setLand({ height })} />
               </div>
+              <p className="text-sm">
+                広さ <strong>{formatArea(landArea)}</strong>
+                <span className="ml-2 text-stone-500">
+                  {formatTsubo(landArea)} / {round1(landArea / 10000).toLocaleString('ja-JP')} ha
+                </span>
+              </p>
+              <div className="flex items-end gap-2">
+                <div className="w-24">
+                  <NumField label="垣根の幅 (m)" value={hedgeWidth} min={0.5} max={50} onCommit={setHedgeWidth} />
+                </div>
+                <button
+                  className={btn + ' flex-1 justify-center'}
+                  onClick={() => {
+                    pushHistory();
+                    setZones((zs) => [...zs, ...perimeterHedges(land, hedgeWidth)]);
+                  }}
+                >
+                  外周に垣根を引く
+                </button>
+              </div>
+              <button
+                className="text-left text-xs text-red-600 underline-offset-2 hover:underline disabled:opacity-40"
+                disabled={zones.length === 0}
+                onClick={() => {
+                  pushHistory();
+                  setZones(() => []);
+                  setSelectedId(null);
+                }}
+              >
+                区画をすべて消す(戻すで取り消せます)
+              </button>
             </div>
-          </div>
-        )}
+          </Section>
 
-        {showGuide && (
-          <div className="absolute bottom-6 right-6 w-80 bg-stone-900 text-stone-100 rounded-[2rem] shadow-2xl p-6 animate-in fade-in slide-in-from-bottom-4 duration-300 z-30 overflow-hidden">
-            <div className="flex justify-between items-center mb-6">
-              <div className="flex items-center gap-2">
-                <Sparkles className="text-amber-400" size={18} />
-                <h3 className="font-bold text-sm">原則ガイド分析</h3>
-              </div>
-              <button onClick={() => setShowGuide(false)} className="text-stone-500 hover:text-stone-300"><X size={16} /></button>
-            </div>
-            
-            <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-              <div className="space-y-2">
-                {analysis.scores.map((s, i) => (
-                  <div key={i} className="flex items-center justify-between text-xs p-2 rounded-lg bg-white/5 border border-white/10">
-                    <span className="text-stone-400">{s.label}</span>
-                    <span className={s.status === 'good' ? 'text-emerald-400' : 'text-amber-400'}>
-                      {s.status === 'good' ? '適合' : '要改善'}
+          <Section title="面積の内訳">
+            {breakdown.length === 0 ? (
+              <p className="text-sm text-stone-500">まだ区画がありません。上の道具を選んでドラッグで描いてください。</p>
+            ) : (
+              <table className="w-full text-sm">
+                <tbody>
+                  {breakdown.map((r) => (
+                    <tr key={r.type} className="border-b border-stone-100 last:border-0">
+                      <td className="py-1.5">
+                        <span
+                          className="mr-2 inline-block h-3 w-3 rounded-sm border align-middle"
+                          style={{ background: ZONE_TYPES[r.type].fill, borderColor: ZONE_TYPES[r.type].stroke }}
+                        />
+                        {ZONE_TYPES[r.type].label}
+                        <span className="ml-1 text-xs text-stone-400">×{r.count}</span>
+                      </td>
+                      <td className="py-1.5 text-right tabular-nums">{formatArea(r.area)}</td>
+                      <td className="w-14 py-1.5 text-right tabular-nums text-stone-500">
+                        {landArea > 0 ? Math.round((r.area / landArea) * 100) : 0}%
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="text-stone-500">
+                    <td className="pt-2">まだ決めていない所</td>
+                    <td className="pt-2 text-right tabular-nums">{formatArea(Math.max(0, landArea - usedArea))}</td>
+                    <td className="pt-2 text-right tabular-nums">
+                      {landArea > 0 ? Math.max(0, Math.round(((landArea - usedArea) / landArea) * 100)) : 0}%
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
+          </Section>
+
+          <Section title="原則チェック">
+            <p className="mb-3 text-xs text-stone-500">決まったルールで判定しています(AI ではありません)。</p>
+            <ul className="flex flex-col gap-2">
+              {checks.map((c) => (
+                <li key={c.label} className="rounded-lg bg-stone-50 px-3 py-2">
+                  <div className="flex items-center justify-between text-sm font-medium">
+                    <span>{c.label}</span>
+                    <span
+                      className={
+                        c.status === 'good' ? 'text-emerald-700' : c.status === 'warn' ? 'text-amber-700' : 'text-stone-500'
+                      }
+                    >
+                      {c.status === 'good' ? '◯ 適合' : c.status === 'warn' ? '△ 要検討' : '— 未定'}
                     </span>
                   </div>
-                ))}
-              </div>
-              
-              <div className="h-px bg-white/10" />
-              
-              <div className="space-y-3">
-                <h4 className="text-[10px] font-bold text-amber-400 uppercase tracking-wider">AI フィードバック</h4>
-                {analysis.tips.length > 0 ? (
-                  analysis.tips.map((tip, i) => (
-                    <div key={i} className="text-xs leading-relaxed text-stone-300 flex gap-2">
-                      <span className="text-amber-500 shrink-0">•</span>
-                      <p>{tip}</p>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-xs text-emerald-400 italic">素晴らしい！基本原則に沿った調和のとれた設計です。この土地は一族にとっての聖域となるでしょう。</p>
-                )}
-              </div>
-            </div>
-          </div>
-        )}
+                  <p className="mt-1 text-xs leading-relaxed text-stone-600">{c.detail}</p>
+                </li>
+              ))}
+            </ul>
+          </Section>
+        </div>
       </main>
-
-      <style dangerouslySetInnerHTML={{ __html: `
-        @keyframes zoom-in-50 {
-          from { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
-          to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-        }
-        .animate-in { animation-fill-mode: forwards; }
-        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
-        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
-      `}} />
     </div>
   );
 }
-
